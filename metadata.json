@@ -1,0 +1,8 @@
+{
+  "name": "Software Research & Planning Architect",
+  "description": "Transform software ideas into researched requirements, practical blueprints, and self-contained coding agent prompts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
