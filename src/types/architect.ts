@@ -20,6 +20,7 @@ export interface InterviewOption {
   description: string;
   tradeoff: string;
   recommended?: boolean;
+  action?: 'continue_interview' | 'proceed_to_review' | 'add_constraint';
 }
 
 export interface InterviewMessage {
@@ -28,6 +29,7 @@ export interface InterviewMessage {
   text: string;
   timestamp: number;
   options?: InterviewOption[];
+  interviewStatus?: 'continue' | 'ready_for_review';
   relatedCategory?: 'purpose' | 'features' | 'platform' | 'data' | 'integrations' | 'budget' | 'exclusions';
   feasibilityNote?: {
     topic: string;

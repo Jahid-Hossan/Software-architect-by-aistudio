@@ -14,7 +14,9 @@ import {
   HelpCircle,
   CheckCircle,
   CheckCircle2,
-  Info
+  Info,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 
 interface InterviewPhaseProps {
@@ -22,6 +24,8 @@ interface InterviewPhaseProps {
   onSendMessage: (text: string, selectedOption?: InterviewOption) => Promise<void>;
   onProceedToReview: () => void;
   isLoading: boolean;
+  error?: string | null;
+  onClearError?: () => void;
 }
 
 export const InterviewPhase: React.FC<InterviewPhaseProps> = ({
@@ -29,6 +33,8 @@ export const InterviewPhase: React.FC<InterviewPhaseProps> = ({
   onSendMessage,
   onProceedToReview,
   isLoading,
+  error,
+  onClearError,
 }) => {
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -51,6 +57,21 @@ export const InterviewPhase: React.FC<InterviewPhaseProps> = ({
 
   const handleSelectOption = async (option: InterviewOption) => {
     if (isLoading) return;
+
+    // Check machine-readable action first or fallback to label comparison
+    if (
+      option.action === 'proceed_to_review' ||
+      option.label.toLowerCase().includes('proceed to requirements review')
+    ) {
+      onProceedToReview();
+      return;
+    }
+
+    if (option.action === 'add_constraint') {
+      setInputText('Custom security or compliance constraint: ');
+      return;
+    }
+
     const responseText = `${option.label} — ${option.description}`;
     await onSendMessage(responseText, option);
   };
@@ -85,15 +106,53 @@ export const InterviewPhase: React.FC<InterviewPhaseProps> = ({
           </div>
           <button
             onClick={onProceedToReview}
-            disabled={userTurnsCount < 1}
+            disabled={userTurnsCount < 1 || isLoading}
             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-medium transition-all shadow-md"
             title={userTurnsCount < 1 ? 'Answer at least one question to proceed' : 'Review compiled requirements'}
           >
-            <span>Proceed to Review</span>
-            <ArrowRight className="w-3.5 h-3.5" />
+            {isLoading ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>Synthesizing requirements...</span>
+              </>
+            ) : (
+              <>
+                <span>Proceed to Review</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </>
+            )}
           </button>
         </div>
       </div>
+
+      {/* Error Callout if synthesis failed */}
+      {error && (
+        <div className="mb-6 p-4 rounded-xl bg-rose-950/40 border border-rose-800 flex items-start justify-between gap-3 text-xs text-rose-200">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold block text-rose-100">Review Synthesis Failed</span>
+              <span className="text-rose-300">{error}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={onProceedToReview}
+              className="px-3 py-1 bg-rose-800 hover:bg-rose-700 text-white rounded font-medium text-xs transition-colors"
+            >
+              Retry
+            </button>
+            {onClearError && (
+              <button
+                onClick={onClearError}
+                className="p-1 text-rose-400 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Main Conversation Stream */}
       <div className="space-y-6 mb-8">
@@ -149,33 +208,47 @@ export const InterviewPhase: React.FC<InterviewPhaseProps> = ({
                     <span>Select an Architectural Path or Type Below:</span>
                   </div>
                   <div className="grid grid-cols-1 gap-2.5">
-                    {msg.options.map((opt, optIdx) => (
-                      <button
-                        key={optIdx}
-                        onClick={() => handleSelectOption(opt)}
-                        className={`text-left p-3.5 rounded-xl border transition-all ${
-                          opt.recommended
-                            ? 'bg-indigo-950/20 border-indigo-500/40 hover:border-indigo-400 hover:bg-indigo-950/40'
-                            : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-850'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-medium text-xs text-slate-100 flex items-center gap-2">
-                            {opt.label}
-                          </span>
-                          {opt.recommended && (
-                            <span className="text-[10px] uppercase font-mono text-indigo-400 font-semibold">
-                              Recommended
+                    {msg.options.map((opt, optIdx) => {
+                      const isProceedOption =
+                        opt.action === 'proceed_to_review' ||
+                        opt.label.toLowerCase().includes('proceed to requirements review');
+
+                      return (
+                        <button
+                          key={optIdx}
+                          disabled={isLoading}
+                          onClick={() => handleSelectOption(opt)}
+                          className={`text-left p-3.5 rounded-xl border transition-all ${
+                            isProceedOption
+                              ? 'bg-emerald-950/30 border-emerald-500/50 hover:border-emerald-400 hover:bg-emerald-950/50 text-emerald-100 ring-1 ring-emerald-500/30'
+                              : opt.recommended
+                              ? 'bg-indigo-950/20 border-indigo-500/40 hover:border-indigo-400 hover:bg-indigo-950/40'
+                              : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-850'
+                          } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-medium text-xs text-slate-100 flex items-center gap-2">
+                              {opt.label}
                             </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-slate-400 mb-1.5">{opt.description}</p>
-                        <div className="text-[11px] text-slate-500 flex items-start gap-1">
-                          <span className="font-medium text-slate-400">Trade-off:</span>
-                          <span>{opt.tradeoff}</span>
-                        </div>
-                      </button>
-                    ))}
+                            {isProceedOption ? (
+                              <span className="text-[10px] uppercase font-mono text-emerald-400 font-semibold flex items-center gap-1">
+                                <span>Transition</span>
+                                <ArrowRight className="w-3 h-3" />
+                              </span>
+                            ) : opt.recommended ? (
+                              <span className="text-[10px] uppercase font-mono text-indigo-400 font-semibold">
+                                Recommended
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="text-xs text-slate-400 mb-1.5">{opt.description}</p>
+                          <div className="text-[11px] text-slate-500 flex items-start gap-1">
+                            <span className="font-medium text-slate-400">Trade-off:</span>
+                            <span>{opt.tradeoff}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -221,3 +294,4 @@ export const InterviewPhase: React.FC<InterviewPhaseProps> = ({
     </div>
   );
 };
+

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ProjectState, Phase, InterviewOption, ProjectMemory, RequirementsReview } from './types/architect';
+import { AiSettings } from './types/aiSettings';
+import { loadAiSettings, saveAiSettings } from './services/aiSettingsStorage';
 import { SAMPLE_PROJECTS } from './services/templates';
 import { callArchitectApi } from './services/geminiService';
 import { Header } from './components/Header';
@@ -10,6 +12,7 @@ import { MemoryVault } from './components/MemoryVault';
 import { ReviewPhase } from './components/ReviewPhase';
 import { BlueprintPhase } from './components/BlueprintPhase';
 import { CodingAgentPromptPhase } from './components/CodingAgentPromptPhase';
+import { AiSettingsModal } from './components/AiSettingsModal';
 import { X } from 'lucide-react';
 
 const STORAGE_KEY = 'architect_project_state_v1';
@@ -145,8 +148,18 @@ export const App: React.FC = () => {
     return INITIAL_PROJECT_STATE;
   });
 
+  const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
+  const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [interviewError, setInterviewError] = useState<string | null>(null);
+  const [blueprintError, setBlueprintError] = useState<string | null>(null);
+  const [codingPromptError, setCodingPromptError] = useState<string | null>(null);
   const [isMemoryDrawerOpen, setIsMemoryDrawerOpen] = useState(false);
+
+  const handleSaveAiSettings = (newSettings: AiSettings) => {
+    setAiSettings(newSettings);
+    saveAiSettings(newSettings);
+  };
 
   // Auto-persist state to localStorage
   useEffect(() => {
@@ -169,6 +182,7 @@ export const App: React.FC = () => {
   // Start interview from Idea phase
   const handleStartInterview = async () => {
     setIsLoading(true);
+    setInterviewError(null);
     setProject((prev) => ({
       ...prev,
       currentPhase: 'interview',
@@ -184,16 +198,19 @@ export const App: React.FC = () => {
               description: 'Single-user workflow with fast local execution and zero friction.',
               tradeoff: 'Fastest to build and launch; no complex multi-user permissions needed for v1.',
               recommended: true,
+              action: 'continue_interview',
             },
             {
               label: 'Collaborative Small Team (2–10 members)',
               description: 'Shared workspaces with basic invite or link sharing.',
               tradeoff: 'Higher engagement, but requires cloud backend and user authentication.',
+              action: 'continue_interview',
             },
             {
               label: 'Enterprise / Regulated Organization',
               description: 'Strict security, audit logs, and compliance boundaries.',
               tradeoff: 'Highest revenue potential, but requires RBAC, audit trails, and data isolation.',
+              action: 'continue_interview',
             },
           ],
           relatedCategory: 'purpose',
@@ -250,6 +267,7 @@ export const App: React.FC = () => {
         conversation: newConversation,
         memory: project.memory,
         userReply: text,
+        aiSettings,
       });
 
       const architectMsg = {
@@ -297,20 +315,45 @@ export const App: React.FC = () => {
 
   // Proceed from Interview to Requirements Review
   const handleProceedToReview = async () => {
+    // Idempotency: prevent duplicate triggers if already loading or already in review
+    if (isLoading || project.currentPhase === 'review') return;
+
     setIsLoading(true);
+    setInterviewError(null);
+
+    // Record transition decision once in Project Memory if not already logged
+    const alreadyLogged = (project.memory.userDecisions || []).some((d) =>
+      d.toLowerCase().includes('proceed to requirements review')
+    );
+    const updatedMemory = alreadyLogged
+      ? project.memory
+      : {
+          ...project.memory,
+          userDecisions: [
+            ...(project.memory.userDecisions || []),
+            'Selected: Proceed to Requirements Review & Confirmation Gate',
+          ],
+        };
+
     try {
       const reviewData = await callArchitectApi({
         action: 'synthesize_review',
         projectName: project.name,
         initialIdea: project.initialIdea,
         conversation: project.conversation,
-        memory: project.memory,
+        memory: updatedMemory,
+        aiSettings,
       });
+
+      if (!reviewData || !reviewData.purpose) {
+        throw new Error('Incomplete response received during requirements synthesis. Please retry.');
+      }
 
       setProject((prev) =>
         normalizeProjectState({
           ...prev,
           currentPhase: 'review',
+          memory: updatedMemory,
           review: {
             ...prev.review,
             ...reviewData,
@@ -319,16 +362,23 @@ export const App: React.FC = () => {
           },
         })
       );
-    } catch (e) {
+    } catch (e: any) {
       console.error('Error generating review:', e);
+      setInterviewError(
+        e?.message || 'Failed to synthesize requirements review. You can retry.'
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Explicit confirmation gate (Section 7)
+  // Explicit confirmation gate (Section 7): synthesizes Implementation Blueprint ONLY
   const handleConfirmRequirements = async () => {
+    if (isLoading) return;
+
     setIsLoading(true);
+    setBlueprintError(null);
+
     try {
       // 1. Mark confirmed
       const confirmedReview = {
@@ -337,35 +387,90 @@ export const App: React.FC = () => {
         confirmedAt: Date.now(),
       };
 
-      // 2. Synthesize Implementation Blueprint
+      // 2. Synthesize Implementation Blueprint ONLY
       const blueprintData = await callArchitectApi({
         action: 'generate_blueprint',
         projectName: project.name,
         initialIdea: project.initialIdea,
         review: confirmedReview,
         memory: project.memory,
+        aiSettings,
       });
 
-      // 3. Synthesize Coding Agent Prompt
-      const promptData = await callArchitectApi({
-        action: 'generate_coding_prompt',
-        projectName: project.name,
-        initialIdea: project.initialIdea,
-        review: confirmedReview,
-        blueprint: blueprintData,
-      });
+      if (!blueprintData) {
+        throw new Error('Blueprint generation returned no data.');
+      }
 
       setProject((prev) =>
         normalizeProjectState({
           ...prev,
           review: confirmedReview,
           blueprint: blueprintData,
-          codingPrompt: promptData.markdown || promptData.text || '',
+          codingPrompt: prev.codingPrompt || '',
           currentPhase: 'blueprint',
         })
       );
-    } catch (e) {
-      console.error('Error during confirmation synthesis:', e);
+    } catch (e: any) {
+      console.error('Error generating blueprint:', e);
+      setBlueprintError(
+        e?.message || 'Failed to generate implementation blueprint. You can retry.'
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Dedicated Coding Agent Prompt Generator (invoked from Blueprint)
+  const handleGenerateCodingPrompt = async () => {
+    if (isLoading) return;
+
+    if (!project.review.isConfirmed) {
+      setCodingPromptError('Requirements must be explicitly confirmed before generating the coding prompt.');
+      return;
+    }
+
+    if (!project.blueprint) {
+      setCodingPromptError('Implementation blueprint is missing. Please confirm requirements to generate the blueprint first.');
+      return;
+    }
+
+    setIsLoading(true);
+    setCodingPromptError(null);
+
+    try {
+      const result = await callArchitectApi({
+        action: 'generate_coding_prompt',
+        projectName: project.name,
+        initialIdea: project.initialIdea,
+        review: project.review,
+        blueprint: project.blueprint,
+        memory: project.memory,
+        aiSettings,
+      });
+
+      const promptText =
+        typeof result === 'string'
+          ? result
+          : result?.markdown ||
+            result?.codingPrompt ||
+            result?.text ||
+            '';
+
+      if (!promptText || !promptText.trim()) {
+        throw new Error('Coding Agent Prompt generation returned an empty response.');
+      }
+
+      setProject((prev) => ({
+        ...prev,
+        codingPrompt: promptText.trim(),
+        currentPhase: 'coding_prompt',
+        updatedAt: Date.now(),
+      }));
+    } catch (error: any) {
+      console.error('Error generating Coding Agent Prompt:', error);
+      setCodingPromptError(
+        error?.message || 'Failed to generate Coding Agent Prompt. Please retry.'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -386,6 +491,9 @@ export const App: React.FC = () => {
 
   // Load a pre-researched archetype
   const handleSelectSample = (sample: typeof SAMPLE_PROJECTS[0]) => {
+    setInterviewError(null);
+    setBlueprintError(null);
+    setCodingPromptError(null);
     setProject(
       normalizeProjectState({
         ...sample,
@@ -400,6 +508,9 @@ export const App: React.FC = () => {
   const handleReset = () => {
     if (confirm('Start a new software project? Current memory will be cleared.')) {
       setProject(INITIAL_PROJECT_STATE);
+      setInterviewError(null);
+      setBlueprintError(null);
+      setCodingPromptError(null);
       localStorage.removeItem(STORAGE_KEY);
     }
   };
@@ -438,6 +549,8 @@ export const App: React.FC = () => {
         isMemoryOpen={isMemoryDrawerOpen}
         onExportJson={handleExportJson}
         onExportMarkdown={handleExportMarkdown}
+        onOpenAiSettings={() => setIsAiSettingsOpen(true)}
+        activeModelSlug={aiSettings.routing.primary.modelSlug}
       />
 
       {/* Phase Progression Stepper */}
@@ -467,6 +580,8 @@ export const App: React.FC = () => {
             onSendMessage={handleSendMessage}
             onProceedToReview={handleProceedToReview}
             isLoading={isLoading}
+            error={interviewError}
+            onClearError={() => setInterviewError(null)}
           />
         )}
 
@@ -486,6 +601,9 @@ export const App: React.FC = () => {
             onRevokeConfirmation={handleRevokeConfirmation}
             onProceedToBlueprint={() => setPhase('blueprint')}
             onReturnToInterview={() => setPhase('interview')}
+            isLoading={isLoading}
+            error={blueprintError}
+            onClearError={() => setBlueprintError(null)}
           />
         )}
 
@@ -493,7 +611,10 @@ export const App: React.FC = () => {
           <BlueprintPhase
             blueprint={project.blueprint}
             projectName={project.name}
-            onProceedToCodingPrompt={() => setPhase('coding_prompt')}
+            onProceedToCodingPrompt={handleGenerateCodingPrompt}
+            isLoading={isLoading}
+            error={codingPromptError}
+            onClearError={() => setCodingPromptError(null)}
           />
         )}
 
@@ -501,6 +622,9 @@ export const App: React.FC = () => {
           <CodingAgentPromptPhase
             promptText={project.codingPrompt || 'No coding prompt generated yet.'}
             projectName={project.name}
+            onBackToBlueprint={() => setPhase('blueprint')}
+            onRegeneratePrompt={handleGenerateCodingPrompt}
+            isLoading={isLoading}
           />
         )}
       </main>
@@ -532,6 +656,14 @@ export const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* AI Model & API Provider Manager Modal */}
+      <AiSettingsModal
+        isOpen={isAiSettingsOpen}
+        onClose={() => setIsAiSettingsOpen(false)}
+        settings={aiSettings}
+        onSaveSettings={handleSaveAiSettings}
+      />
     </div>
   );
 };

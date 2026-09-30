@@ -5,6 +5,8 @@ import {
   ImplementationBlueprint,
   InterviewOption
 } from '../types/architect';
+import { AiSettings, AiProvider } from '../types/aiSettings';
+import { loadAiSettings } from './aiSettingsStorage';
 
 interface ApiRequestPayload {
   action: 'interview_next' | 'research_feasibility' | 'synthesize_review' | 'generate_blueprint' | 'generate_coding_prompt';
@@ -16,14 +18,20 @@ interface ApiRequestPayload {
   blueprint?: ImplementationBlueprint;
   userReply?: string;
   topic?: string;
+  aiSettings?: AiSettings;
 }
 
 export async function callArchitectApi(payload: ApiRequestPayload) {
   try {
+    const aiSettings = payload.aiSettings || loadAiSettings();
+
     const res = await fetch('/api/architect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        aiSettings,
+      }),
     });
 
     if (!res.ok) {
@@ -42,6 +50,55 @@ export async function callArchitectApi(payload: ApiRequestPayload) {
   }
 }
 
+export async function testAiProviderApi(provider: AiProvider, modelSlug?: string): Promise<{ success: boolean; message: string }> {
+  try {
+    const res = await fetch('/api/architect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'test_connection',
+        testProvider: {
+          provider,
+          modelSlug,
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      return { success: false, message: errData.error || `HTTP ${res.status}` };
+    }
+
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Network request failed' };
+  }
+}
+
+export async function fetchAiProviderModels(provider: AiProvider): Promise<{ success: boolean; models?: Array<{ id: string; name: string; slug: string }>; message?: string }> {
+  try {
+    const res = await fetch('/api/architect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'fetch_models',
+        testProvider: {
+          provider,
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      return { success: false, message: errData.error || `HTTP ${res.status}` };
+    }
+
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: err.message || 'Failed to fetch models' };
+  }
+}
+
 // Resilient fallback engine that preserves full functionality even if offline or without API key
 function getFallbackResponse(payload: ApiRequestPayload): any {
   const { action, projectName, initialIdea, userReply, conversation = [], memory } = payload;
@@ -53,22 +110,26 @@ function getFallbackResponse(payload: ApiRequestPayload): any {
     if (turnCount === 1) {
       return {
         question: `Thank you for sharing your thoughts on "${projectName || 'the project'}". Now let's clarify the core user journey and data persistence: where should the user's data live, and are user accounts required for the first version?`,
+        interviewStatus: 'continue',
         options: [
           {
             label: 'Local-first / Client-side only (IndexedDB / localStorage)',
             description: 'Data never leaves the user device. No login required.',
             tradeoff: 'Instant zero-cost deployment and total privacy, but no multi-device sync unless using file export or P2P.',
-            recommended: true
+            recommended: true,
+            action: 'continue_interview',
           },
           {
             label: 'Cloud database with simple Email / Google Auth',
             description: 'Centralized persistence (e.g. Supabase, Firebase, or PostgreSQL).',
-            tradeoff: 'Seamless cross-device access, but requires user onboarding and ongoing cloud infrastructure cost.'
+            tradeoff: 'Seamless cross-device access, but requires user onboarding and ongoing cloud infrastructure cost.',
+            action: 'continue_interview',
           },
           {
             label: 'Self-hosted or Bring-Your-Own-Storage (BYOS)',
             description: 'User provides their own cloud credentials (S3 bucket, WebDAV, or Google Drive).',
-            tradeoff: 'Zero hosting cost for you, but higher barrier to entry for non-technical users.'
+            tradeoff: 'Zero hosting cost for you, but higher barrier to entry for non-technical users.',
+            action: 'continue_interview',
           }
         ],
         relatedCategory: 'data',
@@ -86,22 +147,26 @@ function getFallbackResponse(payload: ApiRequestPayload): any {
     } else if (turnCount === 2) {
       return {
         question: `What external APIs or third-party integrations are strictly essential for the MVP, and what should be explicitly excluded from this first release?`,
+        interviewStatus: 'continue',
         options: [
           {
             label: 'Strictly zero external dependencies in v1',
             description: 'Self-contained architecture with standard web APIs.',
             tradeoff: 'Eliminates API keys, rate limits, pricing tiers, and external breakage.',
-            recommended: true
+            recommended: true,
+            action: 'continue_interview',
           },
           {
             label: 'One key API integration (e.g. AI model or Payment processor)',
             description: 'Connect to one primary external provider.',
-            tradeoff: 'Enables specialized capability, but requires API key configuration and rate-limit handling.'
+            tradeoff: 'Enables specialized capability, but requires API key configuration and rate-limit handling.',
+            action: 'continue_interview',
           },
           {
             label: 'Multiple integrations (Cloud, Notifications, Payments)',
             description: 'Connect across the full ecosystem.',
-            tradeoff: 'Higher risk of scope creep; recommended to defer non-essential webhooks to v2.'
+            tradeoff: 'Higher risk of scope creep; recommended to defer non-essential webhooks to v2.',
+            action: 'continue_interview',
           }
         ],
         relatedCategory: 'exclusions',
@@ -119,17 +184,20 @@ function getFallbackResponse(payload: ApiRequestPayload): any {
     } else if (turnCount === 3) {
       return {
         question: `We have established your core scope and integrations. What are your budget, hosting, and performance constraints? (e.g., $0/mo free tier, serverless, or dedicated VPS)`,
+        interviewStatus: 'continue',
         options: [
           {
             label: '$0/month free-tier serverless (Vercel, Cloudflare, GitHub Pages)',
             description: 'Zero fixed infrastructure cost.',
             tradeoff: 'Subject to serverless execution timeouts and cold starts; ideal for prototypes and indie apps.',
-            recommended: true
+            recommended: true,
+            action: 'continue_interview',
           },
           {
             label: 'Low-cost container / VPS ($5–$20/mo on Hetzner or Render)',
             description: 'Always-on compute with predictable fixed monthly bill.',
-            tradeoff: 'Handles persistent background tasks and WebSockets, but requires basic server maintenance.'
+            tradeoff: 'Handles persistent background tasks and WebSockets, but requires basic server maintenance.',
+            action: 'continue_interview',
           }
         ],
         relatedCategory: 'budget',
@@ -147,17 +215,20 @@ function getFallbackResponse(payload: ApiRequestPayload): any {
     } else {
       return {
         question: `All foundational architecture dimensions have been explored. Would you like to review the synthesized requirements specification, or is there any special constraint you would like to note?`,
+        interviewStatus: 'ready_for_review',
         options: [
           {
             label: 'Proceed to Requirements Review & Confirmation Gate',
             description: 'Synthesize the complete specifications document for formal approval.',
             tradeoff: 'Transitions project to Review Phase for sign-off.',
-            recommended: true
+            recommended: true,
+            action: 'proceed_to_review',
           },
           {
             label: 'Add custom security or compliance constraint',
             description: 'Specify SOC2, GDPR, HIPAA, or encryption parameters.',
-            tradeoff: 'Adds explicit security compliance checks to the final blueprint.'
+            tradeoff: 'Adds explicit security compliance checks to the final blueprint.',
+            action: 'add_constraint',
           }
         ],
         relatedCategory: 'purpose',

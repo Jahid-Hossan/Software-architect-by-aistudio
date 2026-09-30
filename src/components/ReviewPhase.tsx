@@ -9,7 +9,8 @@ import {
   XCircle,
   HelpCircle,
   Sparkles,
-  RotateCcw
+  RotateCcw,
+  X,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -20,6 +21,9 @@ interface ReviewPhaseProps {
   onRevokeConfirmation: () => void;
   onProceedToBlueprint: () => void;
   onReturnToInterview: () => void;
+  isLoading?: boolean;
+  error?: string | null;
+  onClearError?: () => void;
 }
 
 export const ReviewPhase: React.FC<ReviewPhaseProps> = ({
@@ -29,10 +33,14 @@ export const ReviewPhase: React.FC<ReviewPhaseProps> = ({
   onRevokeConfirmation,
   onProceedToBlueprint,
   onReturnToInterview,
+  isLoading = false,
+  error = null,
+  onClearError,
 }) => {
   const [hasAcknowledgedAssumptions, setHasAcknowledgedAssumptions] = useState(false);
 
   const handleConfirmClick = () => {
+    if (isLoading) return;
     confetti({
       particleCount: 80,
       spread: 60,
@@ -73,6 +81,37 @@ export const ReviewPhase: React.FC<ReviewPhaseProps> = ({
           )}
         </div>
       </div>
+
+      {/* Error Callout if blueprint generation failed */}
+      {error && (
+        <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-800 flex items-start justify-between gap-3 text-xs text-rose-200 shadow-md">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold block text-rose-100">Blueprint Generation Failed</span>
+              <span className="text-rose-300">{error}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleConfirmClick}
+              disabled={isLoading}
+              className="px-3 py-1 bg-rose-800 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded font-medium text-xs transition-colors"
+            >
+              Retry
+            </button>
+            {onClearError && (
+              <button
+                onClick={onClearError}
+                className="p-1 text-rose-400 hover:text-white transition-colors"
+                title="Dismiss error"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Review Document Content */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 sm:p-8 space-y-8 shadow-xl">
@@ -273,10 +312,20 @@ export const ReviewPhase: React.FC<ReviewPhaseProps> = ({
                 </button>
                 <button
                   onClick={handleConfirmClick}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-lg text-xs font-semibold transition-all shadow-lg hover:shadow-indigo-500/20"
+                  disabled={isLoading}
+                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-lg text-xs font-semibold transition-all shadow-lg hover:shadow-indigo-500/20"
                 >
-                  <FileCheck className="w-4 h-4" />
-                  <span>Explicitly Confirm Requirements (v1.0)</span>
+                  {isLoading ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Synthesizing Blueprint...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileCheck className="w-4 h-4" />
+                      <span>Explicitly Confirm Requirements (v1.0)</span>
+                    </>
+                  )}
                 </button>
               </>
             )}

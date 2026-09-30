@@ -1,45 +1,44 @@
-import { GoogleGenAI } from '@google/genai';
-
-let aiInstance: GoogleGenAI | null = null;
-
-function getAiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  if (!apiKey) {
-    return null;
-  }
-  if (!aiInstance) {
-    aiInstance = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return aiInstance;
-}
+import { executeAiRequest, testProviderConnection, fetchProviderModels, AiChatMessage } from './aiRouter.js';
+import { AiSettings, AiProvider } from '../types/aiSettings.js';
 
 export async function handleArchitectRequest(body: any): Promise<any> {
-  const ai = getAiClient();
-  const { action, projectName, initialIdea, conversation = [], memory, userReply, topic } = body;
+  const {
+    action,
+    projectName,
+    initialIdea,
+    conversation = [],
+    memory,
+    userReply,
+    topic,
+    aiSettings,
+    testProvider,
+  } = body;
 
-  if (!ai) {
-    // Graceful indicator to fallback
-    return { fallback: true, reason: 'No GEMINI_API_KEY configured' };
+  // Handle provider connection testing directly
+  if (action === 'test_connection' && testProvider) {
+    const result = await testProviderConnection(testProvider.provider as AiProvider, testProvider.modelSlug);
+    return result;
+  }
+
+  // Handle fetching models directly
+  if (action === 'fetch_models' && testProvider) {
+    const result = await fetchProviderModels(testProvider.provider as AiProvider);
+    return result;
   }
 
   try {
     if (action === 'interview_next') {
-      const prompt = `You are a Software Research & Planning Architect.
+      const systemInstruction = `You are a Software Research & Planning Architect.
 Help users turn an initial software idea into clear, researched requirements, a practical implementation blueprint, and a complete prompt for a coding agent.
 Quality Rules:
 - Ask ONE high-value question at a time (or two closely related questions).
 - Offer 2 or 3 meaningful options and explain their practical differences/tradeoffs.
 - Keep track of: Purpose, intended users, essential features, platform, data/storage, external services, budget/hosting, and explicit exclusions.
 - If the user provided an answer: extract decisions, recommendations, assumptions, and exclusions.
+- When foundational architecture dimensions (purpose, users, data/auth, integrations, hosting) have been sufficiently captured, set "interviewStatus": "ready_for_review" and offer a recommended option with "action": "proceed_to_review" ("Proceed to Requirements Review & Confirmation Gate").
+- You MUST respond ONLY with a single valid JSON object, without backticks or markdown formatting around it.`;
 
-Project Name: "${projectName}"
+      const prompt = `Project Name: "${projectName}"
 Initial Idea: "${initialIdea}"
 Conversation history:
 ${conversation.map((m: any) => `${m.sender.toUpperCase()}: ${m.text}`).join('\n')}
@@ -49,12 +48,14 @@ Latest User Statement: "${userReply || 'Starting conversation'}"
 Return JSON matching this exact structure:
 {
   "question": "string (the clear, focused question)",
+  "interviewStatus": "continue" | "ready_for_review",
   "options": [
     {
       "label": "short label",
       "description": "what this choice means",
       "tradeoff": "practical difference, cost, or limitation",
-      "recommended": boolean
+      "recommended": boolean,
+      "action": "continue_interview" | "proceed_to_review" | "add_constraint"
     }
   ],
   "relatedCategory": "purpose" | "features" | "platform" | "data" | "integrations" | "budget" | "exclusions",
@@ -70,25 +71,30 @@ Return JSON matching this exact structure:
   }
 }`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        },
+      const aiRes = await executeAiRequest({
+        messages: [{ role: 'user', content: prompt }],
+        systemInstruction,
+        temperature: 0.2,
+        responseMimeType: 'application/json',
+        aiSettings,
       });
 
-      const text = response.text;
-      if (!text) throw new Error('Empty response from Gemini');
-      return JSON.parse(text);
+      const parsed = extractJsonObject(aiRes.text);
+      if (!parsed || !parsed.question) {
+        throw new Error('Invalid JSON structure returned by AI model');
+      }
+      return {
+        ...parsed,
+        _providerUsed: aiRes.providerUsed,
+      };
     }
 
     if (action === 'synthesize_review') {
-      const prompt = `You are a Software Research & Planning Architect.
+      const systemInstruction = `You are a Software Research & Planning Architect.
 Present the structured requirements review for the user to explicitly confirm before any blueprint is generated.
+You MUST respond ONLY with a single valid JSON object, without backticks or markdown formatting.`;
 
-Project Name: "${projectName}"
+      const prompt = `Project Name: "${projectName}"
 Initial Idea: "${initialIdea}"
 Project Memory:
 User Decisions: ${JSON.stringify(memory?.userDecisions || [])}
@@ -114,30 +120,35 @@ Return a comprehensive Requirements Review JSON matching this exact structure:
   "successCriteria": ["Concrete measurable success criteria 1", "Criteria 2", "Criteria 3"]
 }`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        },
+      const aiRes = await executeAiRequest({
+        messages: [{ role: 'user', content: prompt }],
+        systemInstruction,
+        temperature: 0.2,
+        responseMimeType: 'application/json',
+        aiSettings,
       });
 
-      const text = response.text;
-      if (!text) throw new Error('Empty response from Gemini');
-      return JSON.parse(text);
+      const parsed = extractJsonObject(aiRes.text);
+      if (!parsed || !parsed.purpose) {
+        throw new Error('Invalid JSON structure returned for Requirements Review');
+      }
+      return {
+        ...parsed,
+        _providerUsed: aiRes.providerUsed,
+      };
     }
 
     if (action === 'generate_blueprint') {
-      const prompt = `You are a Software Research & Planning Architect.
+      const systemInstruction = `You are a Software Research & Planning Architect.
 The requirements have been EXPLICITLY CONFIRMED. Now produce a complete, production-grade implementation blueprint.
 Follow standard software engineering principles:
 - Give implementation tasks unique IDs (TASK-101, TASK-102, etc.), dependencies, and verifiable acceptance criteria.
 - Dependencies must be valid and not form cycles.
 - Provide data models and API contracts.
 - Include clear UI states (empty, loading, error, success) and Definition of Done.
+You MUST respond ONLY with a single valid JSON object, without backticks or markdown formatting.`;
 
-Project Name: "${projectName}"
+      const prompt = `Project Name: "${projectName}"
 Initial Idea: "${initialIdea}"
 Confirmed Review: ${JSON.stringify(body.review)}
 Project Memory: ${JSON.stringify(memory)}
@@ -201,22 +212,26 @@ Return JSON matching this exact structure:
   "risksAndLimitations": ["Risk or limitation 1", "Risk 2"]
 }`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        },
+      const aiRes = await executeAiRequest({
+        messages: [{ role: 'user', content: prompt }],
+        systemInstruction,
+        temperature: 0.2,
+        responseMimeType: 'application/json',
+        aiSettings,
       });
 
-      const text = response.text;
-      if (!text) throw new Error('Empty response from Gemini');
-      return JSON.parse(text);
+      const parsed = extractJsonObject(aiRes.text);
+      if (!parsed || !parsed.tasks) {
+        throw new Error('Invalid JSON structure returned for Implementation Blueprint');
+      }
+      return {
+        ...parsed,
+        _providerUsed: aiRes.providerUsed,
+      };
     }
 
     if (action === 'generate_coding_prompt') {
-      const prompt = `You are a Software Research & Planning Architect.
+      const systemInstruction = `You are a Software Research & Planning Architect.
 Generate a self-contained, complete prompt that another coding agent (e.g., Claude Code, Cursor, Devin, AI Studio) can use without reading the interview conversation.
 Include:
 - Confirmed requirements & explicit exclusions
@@ -226,41 +241,62 @@ Include:
 - Step-by-step implementation tasks with acceptance criteria
 - Configuration placeholders (.env.example with ZERO real secrets)
 - Verification & testing instructions
-- Definition of Done
+- Definition of Done`;
 
-Project Name: "${projectName}"
+      const prompt = `Project Name: "${projectName}"
 Initial Idea: "${initialIdea}"
 Confirmed Review: ${JSON.stringify(body.review)}
 Blueprint: ${JSON.stringify(body.blueprint)}
 
 Format as clean, beautifully structured Markdown with code blocks and headers.`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: {
-          temperature: 0.2,
-        },
+      const aiRes = await executeAiRequest({
+        messages: [{ role: 'user', content: prompt }],
+        systemInstruction,
+        temperature: 0.2,
+        aiSettings,
       });
 
-      return { markdown: response.text || '' };
+      return {
+        markdown: aiRes.text || '',
+        _providerUsed: aiRes.providerUsed,
+      };
     }
 
     return { fallback: true };
   } catch (err: any) {
     const errMsg = err?.message || String(err);
-    const isRateLimit = errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota exceeded');
+    console.log('[AI Router Fallback] Seamlessly switching to heuristic synthesis:', errMsg);
+    return {
+      fallback: true,
+      error: errMsg,
+    };
+  }
+}
 
-    if (isRateLimit) {
-      console.warn('[Gemini API Notice] Free tier quota/rate limit reached. Smoothly switching to local architectural intelligence engine.');
-      return {
-        fallback: true,
-        rateLimited: true,
-        reason: 'Gemini API free tier rate limit reached. Switched to offline architectural knowledge engine.',
-      };
+function extractJsonObject(text: string): any {
+  if (!text) return null;
+  // If wrapped in ```json ... ```, strip markdown tags
+  const cleaned = text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/, '')
+    .replace(/```\s*$/g, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Try to find the first { and last }
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const substring = cleaned.substring(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(substring);
+      } catch {
+        return null;
+      }
     }
-
-    console.error('[Gemini Server Error]', err);
-    return { fallback: true, error: errMsg };
+    return null;
   }
 }

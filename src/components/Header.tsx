@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, Database, FileText, Download, RotateCcw, Sparkles } from 'lucide-react';
+import { Layers, Database, FileText, Download, RotateCcw, Sparkles, Cpu } from 'lucide-react';
 import { ProjectState } from '../types/architect';
 import { SAMPLE_PROJECTS } from '../services/templates';
 
@@ -11,6 +11,8 @@ interface HeaderProps {
   isMemoryOpen: boolean;
   onExportJson: () => void;
   onExportMarkdown: () => void;
+  onOpenAiSettings: () => void;
+  activeModelSlug?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -21,6 +23,8 @@ export const Header: React.FC<HeaderProps> = ({
   isMemoryOpen,
   onExportJson,
   onExportMarkdown,
+  onOpenAiSettings,
+  activeModelSlug,
 }) => {
   const memoryCount =
     (project?.memory?.userDecisions?.length || 0) +
@@ -79,6 +83,21 @@ export const Header: React.FC<HeaderProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Model API & AI Provider Router (Beside Templates) */}
+          <button
+            onClick={onOpenAiSettings}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-750 border border-slate-700 transition-colors"
+            title="Configure AI Models, API Keys & Multi-Provider Routing"
+          >
+            <Cpu className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Model APIs</span>
+            {activeModelSlug && (
+              <span className="hidden md:inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-800/80">
+                {activeModelSlug}
+              </span>
+            )}
+          </button>
 
           {/* Project Memory Drawer Trigger */}
           <button
